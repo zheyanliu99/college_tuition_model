@@ -1,0 +1,200 @@
+---
+title: "Assignment 1"
+author: "Zheyan Liu"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+--- 
+
+
+```{r, include=FALSE}
+library(RNHANES)
+library(tidyverse)
+library(summarytools)
+library(leaps)
+library(ISLR)
+library(glmnet)
+library(caret)
+library(corrplot)
+library(plotmo)
+library(pls)
+```
+
+In this exercise, we predict the sale price of a house using its other characteristics. The
+training data are in the file “housing train.csv”, and the test data are in “housing test.csv”.
+The response is in the column “Sale price”. Among the 25 feature variables, some are
+numeric features, such as living area square feet or first floor square feet, and some are
+categorical features, such as the overall material and finish of the house or kitchen quality.
+A detailed description of the variables is in “dictionary.txt”
+
+# Data processing
+
+```{r}
+train_df = read_csv('housing_training.csv', show_col_types = FALSE)
+test_df = read_csv('housing_test.csv', show_col_types = FALSE)
+# bind them to process together
+train_df = train_df %>% mutate(category = 'train')
+test_df = test_df %>% mutate(category = 'test')
+df = bind_rows(train_df, test_df)
+```
+```{r}
+max_year_built = max(df %>% select(Year_Built))
+max_year_sold = max(df %>% select(Year_Sold))
+
+df = 
+  df %>% mutate(
+    Year_Built = max_year_built - Year_Built,
+    Year_Sold = max_year_sold - Year_Sold,
+    Overall_Qual = as.factor(Overall_Qual),
+    Kitchen_Qual = as.factor(Kitchen_Qual),
+    Fireplace_Qu = as.factor(Fireplace_Qu),
+    Exter_Qual = as.factor(Exter_Qual)
+  )
+
+train_df = df %>% filter(category == 'train') %>% select(-category)
+test_df = df %>% filter(category == 'test') %>% select(-category)
+```
+
+## (a) Fit a linear model using least squares on the training data. Is there any potential disadvantage of this model?
+
+Build model and model result
+
+```{r}
+fit1 = lm(Sale_Price  ~ .,
+           data = train_df)
+
+summary(fit1)
+```
+
+potential disadvantage of this model is the multicollinearity.
+
+```{r}
+corrplot::corrplot(cor(train_df %>% select(where(is.numeric))), method = "circle", type = "full")
+```
+Some variables has high correlation such as [Gr_Liv_Area, First_Flr_SF, Second_Flr_SF, Total_Bsmt_SF] and [Garage_Cars, Garage_Area]. Using linear model with all variables might not be a good choice.
+
+
+
+## (b) Fit a lasso model on the training data and report the test error. When the 1SE rule is applied, how many predictors are included in the model?
+
+Fit lasso model on the training data
+```{r}
+set.seed(7)
+x = train_df %>% select(-Sale_Price)
+y = train_df %>% select(Sale_Price)
+
+x = data.matrix(
+            train_df %>% select(-Sale_Price))
+
+y = data.matrix(
+            train_df %>% select(Sale_Price))
+
+cv.lasso <- cv.glmnet(x, y, 
+                      alpha = 1, 
+                      lambda = exp(seq(5, -5, length = 100)))
+
+```
+
+test error on the test set, using RMSE as metrics and lambda.min
+
+```{r}
+x_test = data.matrix(
+            test_df %>% select(-Sale_Price))
+
+y_test = data.matrix(
+            test_df %>% select(Sale_Price))
+
+y_test_pred = predict(cv.lasso, s = cv.lasso$lambda.min, newx = x_test) # Use best lambda to predict test data
+# test error
+rmse_lasso = sqrt(mean((y_test_pred - y_test)^2))
+```
+The final RMSE using lasso model is `r rmse_lasso`
+
+number of predictors included and their coef using lambda.min
+
+```{r}
+coef = predict(cv.lasso, s = "lambda.min", type = "coefficients")
+coef
+```
+There are `r length(coef[coef != 0])` variables in the lasso model and the lambda is `r cv.lasso$lambda.min`
+
+## (c) Fit an elastic net model on the training data. Report the selected tuning parameters and the test error.
+
+train an elatsic net model
+
+```{r}
+set.seed(7)
+
+ctrl1 <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+df2 <- model.matrix(Sale_Price ~ ., train_df)[ ,-1]
+x <- df2
+y <- train_df$Sale_Price
+
+enet.fit <- train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 11), 
+                                         lambda = exp(seq(2, -2, length = 20))),
+                  trControl = ctrl1)
+enet.fit$bestTune
+```
+test error
+
+```{r}
+
+df2 <- model.matrix(Sale_Price ~ ., test_df)[ ,-1]
+x_test <- df2
+y_test <- test_df$Sale_Price
+
+enet.pred <- predict(enet.fit, newdata = x_test)
+# test error
+rmse_enet = sqrt(mean((enet.pred - y_test)^2))
+```
+The final RMSE using lasso model is `r rmse_enet`
+
+## (d) Fit a partial least squares model on the training data and report the test error. How many components are included in your model?
+
+train a partial least squares model
+
+```{r}
+pls.mod <- plsr(Sale_Price ~., 
+                data = train_df, 
+                scale = TRUE,  
+                validation = "CV")
+
+# summary(pls.mod)
+# validationplot(pls.mod, val.type="MSEP", legendpos = "topright")
+
+cv.mse <- RMSEP(pls.mod)
+ncomp.cv <- which.min(cv.mse$val[1,,])-1
+```
+test error
+
+```{r}
+predy2.pls <- predict(pls.mod, newdata = test_df %>% select(-Sale_Price), 
+                      ncomp = ncomp.cv)
+# test MSE
+rmse_partial = sqrt(mean((test_df$Sale_Price - predy2.pls)^2))
+```
+The final RMSE using lasso model is `r rmse_partial`
+
+number of components included
+```{r}
+ncomp.cv
+```
+
+There are `r ncomp.cv` components in the model
+
+## (e) Which model will you choose for predicting the response? Why?
+
+If I want high accuarcy, I will choose elastic net model because it has the lowest test error. And I will choose partial least squares model if I want a simple model because it has lowest components and its test error is close to that of elastic net model.
+
+
+
+
+
+
