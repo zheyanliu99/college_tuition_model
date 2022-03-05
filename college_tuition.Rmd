@@ -1,5 +1,5 @@
 ---
-title: "Assignment 1"
+title: "Assignment 2"
 author: "Zheyan Liu"
 output:
   pdf_document:
@@ -23,178 +23,113 @@ library(caret)
 library(corrplot)
 library(plotmo)
 library(pls)
+library(ggplot2)
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "95%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = 'bottom'))
+
+options(
+  ggplot2.continuous.colour = 'viridis',
+  ggplot2.continuous.fill = 'viridis'
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
 ```
 
-In this exercise, we predict the sale price of a house using its other characteristics. The
-training data are in the file “housing train.csv”, and the test data are in “housing test.csv”.
-The response is in the column “Sale price”. Among the 25 feature variables, some are
-numeric features, such as living area square feet or first floor square feet, and some are
-categorical features, such as the overall material and finish of the house or kitchen quality.
-A detailed description of the variables is in “dictionary.txt”
+\newpage
 
-# Data processing
+## Intro and data preparation
+
+we build nonlinear models using the “College” data. The dataset
+contains statistics for 565 US Colleges from a previous issue of US News and World Report.
+The response variable is the out-of-state tuition (Outstate).
+
+### Read data
+
+Drop college column
 
 ```{r}
-train_df = read_csv('housing_training.csv', show_col_types = FALSE)
-test_df = read_csv('housing_test.csv', show_col_types = FALSE)
-# bind them to process together
-train_df = train_df %>% mutate(category = 'train')
-test_df = test_df %>% mutate(category = 'test')
-df = bind_rows(train_df, test_df)
-```
-```{r}
-max_year_built = max(df %>% select(Year_Built))
-max_year_sold = max(df %>% select(Year_Sold))
-
 df = 
-  df %>% mutate(
-    Year_Built = max_year_built - Year_Built,
-    Year_Sold = max_year_sold - Year_Sold,
-    Overall_Qual = as.factor(Overall_Qual),
-    Kitchen_Qual = as.factor(Kitchen_Qual),
-    Fireplace_Qu = as.factor(Fireplace_Qu),
-    Exter_Qual = as.factor(Exter_Qual)
-  )
-
-train_df = df %>% filter(category == 'train') %>% select(-category)
-test_df = df %>% filter(category == 'test') %>% select(-category)
+  read_csv('data/College.csv', show_col_types = FALSE) %>% 
+  janitor::clean_names() %>% 
+  select(-college)
 ```
 
-## (a) Fit a linear model using least squares on the training data. Is there any potential disadvantage of this model?
+### Split the dataset into training and testing
 
-Build model and model result
+Partition the dataset into two parts: training data (80%) and test data (20%).
 
 ```{r}
-fit1 = lm(Sale_Price  ~ .,
-           data = train_df)
+trainRows <- createDataPartition(y = df$outstate, p = 0.8, list = FALSE)
+training_df = df[trainRows, ]
+testing_df = df[-trainRows, ]
 
-summary(fit1)
+x_train <- model.matrix(outstate~.,training_df)[,-1]
+y_train <- training_df$outstate
+
+x_test <- model.matrix(outstate~.,testing_df)[,-1]
+y_test <- testing_df$outstate
 ```
 
-potential disadvantage of this model is the multicollinearity.
+
+## (a) Perform exploratory data analysis using the training data
+
+There are `r ncol(training_df)` variables in the data and `r nrow(training_df)` observations.
+
+### summary statistics
+
+All variables are continuous
 
 ```{r}
-corrplot::corrplot(cor(train_df %>% select(where(is.numeric))), method = "circle", type = "full")
+summary(training_df)
 ```
-Some variables has high correlation such as [Gr_Liv_Area, First_Flr_SF, Second_Flr_SF, Total_Bsmt_SF] and [Garage_Cars, Garage_Area]. Using linear model with all variables might not be a good choice.
+### histogram of response variable
 
-
-
-## (b) Fit a lasso model on the training data and report the test error. When the 1SE rule is applied, how many predictors are included in the model?
-
-Fit lasso model on the training data
-```{r}
-set.seed(7)
-x = train_df %>% select(-Sale_Price)
-y = train_df %>% select(Sale_Price)
-
-x = data.matrix(
-            train_df %>% select(-Sale_Price))
-
-y = data.matrix(
-            train_df %>% select(Sale_Price))
-
-cv.lasso <- cv.glmnet(x, y, 
-                      alpha = 1, 
-                      lambda = exp(seq(5, -5, length = 100)))
-
-```
-
-test error on the test set, using RMSE as metrics and lambda.min
+Distribution of outstate is close to normal distribution, much outstate is around 10000 except a second peak around 17500
 
 ```{r}
-x_test = data.matrix(
-            test_df %>% select(-Sale_Price))
-
-y_test = data.matrix(
-            test_df %>% select(Sale_Price))
-
-y_test_pred = predict(cv.lasso, s = cv.lasso$lambda.min, newx = x_test) # Use best lambda to predict test data
-# test error
-rmse_lasso = sqrt(mean((y_test_pred - y_test)^2))
+ggplot(training_df, aes(x=outstate)) + 
+  geom_histogram(bins = 32)
 ```
-The final RMSE using lasso model is `r rmse_lasso`
 
-number of predictors included and their coef using lambda.min
+### correlation of response vs. predictors
+
+Correlation plot shows that some variables are highly correlated with outstate and there is multicollinearity.
 
 ```{r}
-coef = predict(cv.lasso, s = "lambda.min", type = "coefficients")
-coef
+corrplot::corrplot(cor(training_df %>% select(where(is.numeric)) %>% relocate(outstate)), method = "circle", type = "full")
 ```
-There are `r length(coef[coef != 0])` variables in the lasso model and the lambda is `r cv.lasso$lambda.min`
-
-## (c) Fit an elastic net model on the training data. Report the selected tuning parameters and the test error.
-
-train an elatsic net model
+Plot scatterplot of response variables with selection of highly correlated predictors including top10perc, room_board, ph_d, terminal, s_f_ratio and expend. Only s_f_ratio is negatively correlated.
 
 ```{r}
-set.seed(7)
+library(patchwork)
+p1 = ggplot(training_df, aes(x=top10perc, y=outstate)) + geom_point(alpha=0.3)
+p2 = ggplot(training_df, aes(x=room_board, y=outstate)) + geom_point(alpha=0.3)
+p3 = ggplot(training_df, aes(x=ph_d, y=outstate)) + geom_point(alpha=0.3)
+p4 = ggplot(training_df, aes(x=terminal, y=outstate)) + geom_point(alpha=0.3)
+p5 = ggplot(training_df, aes(x=s_f_ratio, y=outstate)) + geom_point(alpha=0.3)
+p6 = ggplot(training_df, aes(x=expend, y=outstate)) + geom_point(alpha=0.3)
 
-ctrl1 <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
-df2 <- model.matrix(Sale_Price ~ ., train_df)[ ,-1]
-x <- df2
-y <- train_df$Sale_Price
-
-enet.fit <- train(x, y,
-                  method = "glmnet",
-                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 11), 
-                                         lambda = exp(seq(2, -2, length = 20))),
-                  trControl = ctrl1)
-enet.fit$bestTune
-```
-test error
-
-```{r}
-
-df2 <- model.matrix(Sale_Price ~ ., test_df)[ ,-1]
-x_test <- df2
-y_test <- test_df$Sale_Price
-
-enet.pred <- predict(enet.fit, newdata = x_test)
-# test error
-rmse_enet = sqrt(mean((enet.pred - y_test)^2))
-```
-The final RMSE using lasso model is `r rmse_enet`
-
-## (d) Fit a partial least squares model on the training data and report the test error. How many components are included in your model?
-
-train a partial least squares model
-
-```{r}
-pls.mod <- plsr(Sale_Price ~., 
-                data = train_df, 
-                scale = TRUE,  
-                validation = "CV")
-
-# summary(pls.mod)
-# validationplot(pls.mod, val.type="MSEP", legendpos = "topright")
-
-cv.mse <- RMSEP(pls.mod)
-ncomp.cv <- which.min(cv.mse$val[1,,])-1
-```
-test error
-
-```{r}
-predy2.pls <- predict(pls.mod, newdata = test_df %>% select(-Sale_Price), 
-                      ncomp = ncomp.cv)
-# test MSE
-rmse_partial = sqrt(mean((test_df$Sale_Price - predy2.pls)^2))
-```
-The final RMSE using lasso model is `r rmse_partial`
-
-number of components included
-```{r}
-ncomp.cv
+(p1 + p2 + p3)/(p4 + p5 + p6)
 ```
 
-There are `r ncomp.cv` components in the model
 
-## (e) Which model will you choose for predicting the response? Why?
-
-If I want high accuarcy, I will choose elastic net model because it has the lowest test error. And I will choose partial least squares model if I want a simple model because it has lowest components and its test error is close to that of elastic net model.
+## (b) Fit smoothing spline models using Terminal as the only predictor of Outstate
 
 
 
+## (c) Fit a generalized additive model (GAM) using all the predictors. 
 
 
 
+## (d) Train a multivariate adaptive regression spline (MARS) model using all the predictors
+
+
+
+# (e) Model selection
